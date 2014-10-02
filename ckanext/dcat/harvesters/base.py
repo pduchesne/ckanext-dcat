@@ -189,7 +189,7 @@ class DCATHarvester(HarvesterBase):
         while True:
 
             try:
-                content, content_type = self._get_content_and_type(url, harvest_job, page)
+                content, content_type, links = self._get_content_and_type(url, harvest_job, page)
             except requests.exceptions.HTTPError, error:
                 if error.response.status_code == 404:
                     if page > 1:
