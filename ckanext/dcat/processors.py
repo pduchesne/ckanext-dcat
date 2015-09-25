@@ -76,8 +76,8 @@ class RDFProcessor(object):
         profiles = []
         loaded_profiles_names = []
 
-        for profile in iter_entry_points(group=RDF_PROFILES_ENTRY_POINT_GROUP):
-            if profile.name in profile_names:
+        for profile_name in profile_names:
+            for profile in iter_entry_points(group=RDF_PROFILES_ENTRY_POINT_GROUP, name=profile_name):
                 profile_class = profile.load()
                 # Set a reference to the profile name
                 profile_class.name = profile.name
