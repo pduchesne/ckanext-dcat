@@ -89,7 +89,7 @@ class DCATHarvester(HarvesterBase):
             if content_type is None and r.headers.get('content-type'):
                 content_type = r.headers.get('content-type').split(";", 1)[0]
 
-            return content, content_type
+            return content, content_type, r.links
 
         except requests.exceptions.HTTPError, error:
             if page > 1 and error.response.status_code == 404:

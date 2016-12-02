@@ -144,6 +144,9 @@ class DCATRDFHarvester(DCATHarvester):
 
         log.debug('In DCATRDFHarvester gather_stage')
 
+        guids_in_source = []
+        object_ids = []
+
         # Get file contents
         url = harvest_job.source.url
 
@@ -159,8 +162,21 @@ class DCATRDFHarvester(DCATHarvester):
         rdf_format = None
         if harvest_job.source.config:
             rdf_format = json.loads(harvest_job.source.config).get("rdf_format")
-        content, rdf_format = self._get_content_and_type(url, harvest_job, 1, content_type=rdf_format)
 
+        while url:
+            content, rdf_format, links = self._get_content_and_type(url, harvest_job, 1, content_type=rdf_format)
+            self.parse_chunk(harvest_job, content, rdf_format, guids_in_source, object_ids)
+
+            url = ('http://www.w3.org/ns/hydra/core#nextPage' in links) and links['http://www.w3.org/ns/hydra/core#nextPage']['url']
+
+        # Check if some datasets need to be deleted
+        object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
+
+        object_ids.extend(object_ids_to_delete)
+
+        return object_ids
+
+    def parse_chunk(self, harvest_job, content, rdf_format, guids_in_source, object_ids):
         # TODO: store content?
         for harvester in p.PluginImplementations(IDCATRDFHarvester):
             content, after_download_errors = harvester.after_download(content, harvest_job)
@@ -180,8 +196,6 @@ class DCATRDFHarvester(DCATHarvester):
             self._save_gather_error('Error parsing the RDF file: {0}'.format(e), harvest_job)
             return False
 
-        guids_in_source = []
-        object_ids = []
         for dataset in parser.datasets():
             if not dataset.get('name'):
                 dataset['name'] = self._gen_new_name(dataset['title'])
@@ -208,13 +222,6 @@ class DCATRDFHarvester(DCATHarvester):
 
             obj.save()
             object_ids.append(obj.id)
-
-        # Check if some datasets need to be deleted
-        object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
-
-        object_ids.extend(object_ids_to_delete)
-
-        return object_ids
 
     def fetch_stage(self, harvest_object):
         # Nothing to do here
