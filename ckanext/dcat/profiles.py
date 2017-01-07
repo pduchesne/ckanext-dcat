@@ -699,6 +699,10 @@ class EuropeanDCATAPProfile(RDFProfile):
                 if value:
                     resource_dict[key] = value
 
+            if 'name' not in resource_dict:
+                # take last URI component as name
+                resource_dict['name'] = distribution.split('/')[-1]
+
             resource_dict['url'] = (self._object_value(distribution,
                                                        DCAT.accessURL) or
                                     self._object_value(distribution,
