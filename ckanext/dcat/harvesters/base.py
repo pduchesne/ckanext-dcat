@@ -60,7 +60,7 @@ class DCATHarvester(HarvesterBase):
             # first we try a HEAD request which may not be supported
             did_get = False
             r = requests.head(url)
-            if r.status_code == 405 or r.status_code == 400:
+            if r.status_code == 405 or r.status_code == 400 or r.status_code == 406 :
                 r = requests.get(url, stream=True)
                 did_get = True
             r.raise_for_status()
