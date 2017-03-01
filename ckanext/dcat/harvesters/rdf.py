@@ -167,7 +167,7 @@ class DCATRDFHarvester(DCATHarvester):
             content, rdf_format, links = self._get_content_and_type(url, harvest_job, 1, content_type=rdf_format)
             self.parse_chunk(harvest_job, content, rdf_format, guids_in_source, object_ids)
 
-            url = ('http://www.w3.org/ns/hydra/core#nextPage' in links) and links['http://www.w3.org/ns/hydra/core#nextPage']['url']
+            url = links and ('http://www.w3.org/ns/hydra/core#nextPage' in links) and links['http://www.w3.org/ns/hydra/core#nextPage']['url']
 
         # Check if some datasets need to be deleted
         object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
