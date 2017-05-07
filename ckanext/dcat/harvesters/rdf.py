@@ -273,6 +273,7 @@ class DCATRDFHarvester(DCATHarvester):
             'user': self._get_user_name(),
             'return_id_only': True,
             'ignore_auth': True,
+            'warnings': []
         }
 
         # Check if a dataset with the same guid exists
@@ -319,6 +320,12 @@ class DCATRDFHarvester(DCATHarvester):
             except p.toolkit.ValidationError, e:
                 self._save_object_error('Create validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
                 return False
+            finally:
+                if 'warnings' in context:
+                    for warning in context['warnings']:
+                        warningExtra = HarvestObjectExtra(object=harvest_object, key='warnings', value=warning)
+                        harvest_object.extras.append(warningExtra)
+                    harvest_object.save()
 
             log.info('Created dataset %s', dataset['name'])
 
