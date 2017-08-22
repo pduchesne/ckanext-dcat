@@ -36,6 +36,7 @@ class DCATController(BaseController):
             'page': toolkit.request.params.get('page'),
             'modified_since': toolkit.request.params.get('modified_since'),
             'format': _format,
+            'validation_mode': toolkit.request.params.get('validation_mode'),
         }
 
         toolkit.response.headers.update(

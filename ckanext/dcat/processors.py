@@ -239,6 +239,7 @@ class RDFSerializer(RDFProcessor):
 
         for profile_class in self._profiles:
             profile = profile_class(self.g, self.compatibility_mode)
+            profile.validation_mode = self.validation_mode
             profile.graph_from_dataset(dataset_dict, dataset_ref)
 
         return dataset_ref

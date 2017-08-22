@@ -41,6 +41,7 @@ def dcat_catalog_show(context, data_dict):
     pagination_info = _pagination_info(query, data_dict)
 
     serializer = RDFSerializer()
+    serializer.validation_mode = data_dict.get('validation_mode') in ['true', 'True']
 
     output = serializer.serialize_catalog({}, dataset_dicts,
                                           _format=data_dict.get('format'),
