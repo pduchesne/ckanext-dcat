@@ -198,7 +198,7 @@ class DCATRDFHarvester(DCATHarvester):
 
         for dataset in parser.datasets():
             if not dataset.get('name'):
-                dataset['name'] = self._gen_new_name(dataset['title'])
+                dataset['name'] = self._gen_new_name(dataset.get('title'))
 
             # Unless already set by the parser, get the owner organization (if any)
             # from the harvest source dataset
