@@ -418,18 +418,21 @@ class RDFProfile(object):
 
     def _add_triples_from_dict(self, _dict, subject, items,
                                list_value=False,
-                               date_value=False):
+                               date_value=False,
+                               uriref_value=False):
         for item in items:
             key, predicate, fallbacks = item
             self._add_triple_from_dict(_dict, subject, predicate, key,
                                        fallbacks=fallbacks,
                                        list_value=list_value,
-                                       date_value=date_value)
+                                       date_value=date_value,
+                                       uriref_value=uriref_value)
 
     def _add_triple_from_dict(self, _dict, subject, predicate, key,
                               fallbacks=None,
                               list_value=False,
-                              date_value=False):
+                              date_value=False,
+                              uriref_value=False):
         '''
         Adds a new triple to the graph with the provided parameters
 
@@ -454,6 +457,8 @@ class RDFProfile(object):
             self._add_list_triple(subject, predicate, value)
         elif value and date_value:
             self._add_date_triple(subject, predicate, value)
+        elif value and uriref_value:
+            self.g.add((subject, predicate, URIRef(value)))
         elif value:
             # Normal text value
             self.g.add((subject, predicate, Literal(value)))
@@ -915,8 +920,13 @@ class EuropeanDCATAPProfile(RDFProfile):
                 ('rights', DCT.rights, None),
                 ('license', DCT.license, None),
             ]
-
             self._add_triples_from_dict(resource_dict, distribution, items)
+
+            #  URI values
+            uri_items = [
+                ('license', DCT.license, None),
+                ]
+            self._add_triples_from_dict(resource_dict, distribution, uri_items, uriref_value=True)
 
             # Format
             if '/' in resource_dict.get('format', ''):
