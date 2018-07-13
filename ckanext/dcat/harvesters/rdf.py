@@ -1,10 +1,14 @@
 import json
 import uuid
 import logging
+import hashlib
+import traceback
 
 import ckan.plugins as p
 import ckan.model as model
 import ckan.logic as logic
+
+import ckan.lib.plugins as lib_plugins
 
 from ckanext.harvest.model import HarvestObject, HarvestObjectExtra
 
@@ -45,6 +49,10 @@ class DCATRDFHarvester(DCATHarvester):
         guid = None
         for extra in dataset_dict.get('extras', []):
             if extra['key'] == 'uri' and extra['value']:
+                return extra['value']
+
+        for extra in dataset_dict.get('extras', []):
+            if extra['key'] == 'identifier' and extra['value']:
                 return extra['value']
 
         for extra in dataset_dict.get('extras', []):
@@ -144,30 +152,95 @@ class DCATRDFHarvester(DCATHarvester):
 
         log.debug('In DCATRDFHarvester gather_stage')
 
-        guids_in_source = []
-        object_ids = []
-
-        # Get file contents
-        url = harvest_job.source.url
-
-        for harvester in p.PluginImplementations(IDCATRDFHarvester):
-            url, before_download_errors = harvester.before_download(url, harvest_job)
-
-            for error_msg in before_download_errors:
-                self._save_gather_error(error_msg, harvest_job)
-
-            if not url:
-                return False
-
         rdf_format = None
         if harvest_job.source.config:
             rdf_format = json.loads(harvest_job.source.config).get("rdf_format")
 
-        while url:
-            content, rdf_format, links = self._get_content_and_type(url, harvest_job, 1, content_type=rdf_format)
-            self.parse_chunk(harvest_job, content, rdf_format, guids_in_source, object_ids)
+        # Get file contents of first page
+        next_page_url = harvest_job.source.url
 
-            url = links and ('http://www.w3.org/ns/hydra/core#nextPage' in links) and links['http://www.w3.org/ns/hydra/core#nextPage']['url']
+        guids_in_source = []
+        object_ids = []
+        last_content_hash = None
+
+        while next_page_url:
+            for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                next_page_url, before_download_errors = harvester.before_download(next_page_url, harvest_job)
+
+                for error_msg in before_download_errors:
+                    self._save_gather_error(error_msg, harvest_job)
+
+                if not next_page_url:
+                    return []
+
+            content, rdf_format, links = self._get_content_and_type(next_page_url, harvest_job, 1, content_type=rdf_format)
+
+            content_hash = hashlib.md5()
+            if content:
+                content_hash.update(content)
+
+            if last_content_hash:
+                if content_hash.digest() == last_content_hash.digest():
+                    log.warning('Remote content was the same even when using a paginated URL, skipping')
+                    break
+            else:
+                last_content_hash = content_hash
+
+            # TODO: store content?
+            for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                content, after_download_errors = harvester.after_download(content, harvest_job)
+
+                for error_msg in after_download_errors:
+                    self._save_gather_error(error_msg, harvest_job)
+
+            if not content:
+                return []
+
+            # TODO: profiles conf
+            parser = RDFParser()
+
+            try:
+                parser.parse(content, _format=rdf_format)
+            except RDFParserException, e:
+                self._save_gather_error('Error parsing the RDF file: {0}'.format(e), harvest_job)
+                return []
+
+            try:
+                for dataset in parser.datasets():
+                    if not dataset.get('name'):
+                        dataset['name'] = self._gen_new_name(dataset['title'])
+
+                    # Unless already set by the parser, get the owner organization (if any)
+                    # from the harvest source dataset
+                    if not dataset.get('owner_org'):
+                        source_dataset = model.Package.get(harvest_job.source.id)
+                        if source_dataset.owner_org:
+                            dataset['owner_org'] = source_dataset.owner_org
+
+                    # Try to get a unique identifier for the harvested dataset
+                    guid = self._get_guid(dataset)
+
+                    if not guid:
+                        self._save_gather_error('Could not get a unique identifier for dataset: {0}'.format(dataset),
+                                                harvest_job)
+                        continue
+
+                    dataset['extras'].append({'key': 'guid', 'value': guid})
+                    guids_in_source.append(guid)
+
+                    obj = HarvestObject(guid=guid, job=harvest_job,
+                                        content=json.dumps(dataset))
+
+                    obj.save()
+                    object_ids.append(obj.id)
+            except Exception, e:
+                self._save_gather_error('Error when processsing dataset: %r / %s' % (e, traceback.format_exc()),
+                                        harvest_job)
+                return []
+
+            # get the next page
+            # next_page_url = links and ('http://www.w3.org/ns/hydra/core#nextPage' in links) and links['http://www.w3.org/ns/hydra/core#nextPage']['url']
+            next_page_url = parser.next_page()
 
         # Check if some datasets need to be deleted
         object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
@@ -175,53 +248,6 @@ class DCATRDFHarvester(DCATHarvester):
         object_ids.extend(object_ids_to_delete)
 
         return object_ids
-
-    def parse_chunk(self, harvest_job, content, rdf_format, guids_in_source, object_ids):
-        # TODO: store content?
-        for harvester in p.PluginImplementations(IDCATRDFHarvester):
-            content, after_download_errors = harvester.after_download(content, harvest_job)
-
-            for error_msg in after_download_errors:
-                self._save_gather_error(error_msg, harvest_job)
-
-        if not content:
-            return False
-
-        # TODO: profiles conf
-        parser = RDFParser()
-
-        try:
-            parser.parse(content, _format=rdf_format)
-        except RDFParserException, e:
-            self._save_gather_error('Error parsing the RDF file: {0}'.format(e), harvest_job)
-            return False
-
-        for dataset in parser.datasets():
-            if not dataset.get('name'):
-                dataset['name'] = self._gen_new_name(dataset.get('title'))
-
-            # Unless already set by the parser, get the owner organization (if any)
-            # from the harvest source dataset
-            if not dataset.get('owner_org'):
-                source_dataset = model.Package.get(harvest_job.source.id)
-                if source_dataset.owner_org:
-                    dataset['owner_org'] = source_dataset.owner_org
-
-            # Try to get a unique identifier for the harvested dataset
-            guid = self._get_guid(dataset)
-
-            if not guid:
-                log.error('Could not get a unique identifier for dataset: {0}'.format(dataset))
-                continue
-
-            dataset['extras'].append({'key': 'guid', 'value': guid})
-            guids_in_source.append(guid)
-
-            obj = HarvestObject(guid=guid, job=harvest_job,
-                                content=json.dumps(dataset))
-
-            obj.save()
-            object_ids.append(obj.id)
 
     def fetch_stage(self, harvest_object):
         # Nothing to do here
@@ -276,59 +302,109 @@ class DCATRDFHarvester(DCATHarvester):
             'warnings': []
         }
 
+        dataset = self.modify_package_dict(dataset, {}, harvest_object)
+
         # Check if a dataset with the same guid exists
         existing_dataset = self._get_existing_dataset(harvest_object.guid)
 
-        if existing_dataset:
-            # Don't change the dataset name even if the title has
-            dataset['name'] = existing_dataset['name']
-            dataset['id'] = existing_dataset['id']
+        try:
+            if existing_dataset:
+                # Don't change the dataset name even if the title has
+                dataset['name'] = existing_dataset['name']
+                dataset['id'] = existing_dataset['id']
 
-            # Save reference to the package on the object
-            harvest_object.package_id = dataset['id']
-            harvest_object.add()
+                harvester_tmp_dict = {}
 
-            try:
-                p.toolkit.get_action('package_update')(context, dataset)
-            except p.toolkit.ValidationError, e:
-                self._save_object_error('Update validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
-                return False
+                # check if resources already exist based on their URI
+                existing_resources =  existing_dataset.get('resources')
+                resource_mapping = {r.get('uri'): r.get('id') for r in existing_resources if r.get('uri')}
+                for resource in dataset.get('resources'):
+                    res_uri = resource.get('uri')
+                    if res_uri and res_uri in resource_mapping:
+                        resource['id'] = resource_mapping[res_uri]
 
-            log.info('Updated dataset %s', dataset['name'])
+                for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                    harvester.before_update(harvest_object, dataset, harvester_tmp_dict)
 
-        else:
+                try:
+                    if dataset:
+                        # Save reference to the package on the object
+                        harvest_object.package_id = dataset['id']
+                        harvest_object.add()
 
-            package_schema = logic.schema.default_create_package_schema()
-            context['schema'] = package_schema
+                        p.toolkit.get_action('package_update')(context, dataset)
+                    else:
+                        log.info('Ignoring dataset %s' % existing_dataset['name'])
+                        return 'unchanged'
+                except p.toolkit.ValidationError, e:
+                    self._save_object_error('Update validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
+                    return False
 
-            # We need to explicitly provide a package ID
-            dataset['id'] = unicode(uuid.uuid4())
-            package_schema['id'] = [unicode]
+                for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                    err = harvester.after_update(harvest_object, dataset, harvester_tmp_dict)
 
-            # Save reference to the package on the object
-            harvest_object.package_id = dataset['id']
-            harvest_object.add()
+                    if err:
+                        self._save_object_error('RDFHarvester plugin error: %s' % err, harvest_object, 'Import')
+                        return False
 
-            # Defer constraints and flush so the dataset can be indexed with
-            # the harvest object id (on the after_show hook from the harvester
-            # plugin)
-            model.Session.execute('SET CONSTRAINTS harvest_object_package_id_fkey DEFERRED')
-            model.Session.flush()
+                log.info('Updated dataset %s' % dataset['name'])
 
-            try:
-                p.toolkit.get_action('package_create')(context, dataset)
-            except p.toolkit.ValidationError, e:
-                self._save_object_error('Create validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
-                return False
-            finally:
-                if 'warnings' in context:
-                    for warning in context['warnings']:
-                        warningExtra = HarvestObjectExtra(object=harvest_object, key='warnings', value=warning)
-                        harvest_object.extras.append(warningExtra)
-                    harvest_object.save()
+            else:
+                package_plugin = lib_plugins.lookup_package_plugin(dataset.get('type', None))
 
-            log.info('Created dataset %s', dataset['name'])
+                package_schema = package_plugin.create_package_schema()
+                context['schema'] = package_schema
 
-        model.Session.commit()
+                # We need to explicitly provide a package ID
+                dataset['id'] = unicode(uuid.uuid4())
+                package_schema['id'] = [unicode]
+
+                harvester_tmp_dict = {}
+
+                name = dataset['name']
+                for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                    harvester.before_create(harvest_object, dataset, harvester_tmp_dict)
+
+                try:
+                    if dataset:
+                        # Save reference to the package on the object
+                        harvest_object.package_id = dataset['id']
+                        harvest_object.add()
+
+                        # Defer constraints and flush so the dataset can be indexed with
+                        # the harvest object id (on the after_show hook from the harvester
+                        # plugin)
+                        model.Session.execute('SET CONSTRAINTS harvest_object_package_id_fkey DEFERRED')
+                        model.Session.flush()
+
+                        p.toolkit.get_action('package_create')(context, dataset)
+                    else:
+                        log.info('Ignoring dataset %s' % name)
+                        return 'unchanged'
+                except p.toolkit.ValidationError, e:
+                    self._save_object_error('Create validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
+                    return False
+                finally:
+                    if 'warnings' in context:
+                        for warning in context['warnings']:
+                            warningExtra = HarvestObjectExtra(object=harvest_object, key='warnings', value=warning)
+                            harvest_object.extras.append(warningExtra)
+                        harvest_object.save()
+
+                for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                    err = harvester.after_create(harvest_object, dataset, harvester_tmp_dict)
+
+                    if err:
+                        self._save_object_error('RDFHarvester plugin error: %s' % err, harvest_object, 'Import')
+                        return False
+
+                log.info('Created dataset %s' % dataset['name'])
+
+        except Exception, e:
+            self._save_object_error('Error importing dataset %s: %r / %s' % (dataset.get('name', ''), e, traceback.format_exc()), harvest_object, 'Import')
+            return False
+
+        finally:
+            model.Session.commit()
 
         return True

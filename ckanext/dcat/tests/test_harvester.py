@@ -1,16 +1,22 @@
+# -*- coding: utf-8 -*-
+
 from collections import defaultdict
 
 import nose
 import httpretty
+from mock import patch
+
+from six.moves import xrange
 
 import ckan.plugins as p
-import ckan.new_tests.helpers as h
+import ckantoolkit.tests.helpers as h
 
 import ckanext.harvest.model as harvest_model
 from ckanext.harvest import queue
 
-from ckanext.dcat.harvesters import DCATRDFHarvester
+from ckanext.dcat.harvesters import DCATRDFHarvester, DCATJSONHarvester
 from ckanext.dcat.interfaces import IDCATRDFHarvester
+import ckanext.dcat.harvesters.rdf
 
 
 eq_ = nose.tools.eq_
@@ -22,20 +28,33 @@ eq_ = nose.tools.eq_
 
 # Start monkey-patch
 
-original_get_content_and_type = DCATRDFHarvester._get_content_and_type
+original_rdf_get_content_and_type = DCATRDFHarvester._get_content_and_type
 
-
-def _patched_get_content_and_type(self, url, harvest_job, page=1, content_type=None):
+def _patched_rdf_get_content_and_type(self, url, harvest_job, page=1, content_type=None):
 
     httpretty.enable()
 
-    value1, value2 = original_get_content_and_type(self, url, harvest_job, page, content_type)
+    value1, value2 = original_rdf_get_content_and_type(self, url, harvest_job, page, content_type)
 
     httpretty.disable()
 
     return value1, value2
 
-DCATRDFHarvester._get_content_and_type = _patched_get_content_and_type
+DCATRDFHarvester._get_content_and_type = _patched_rdf_get_content_and_type
+
+original_json_get_content_and_type = DCATJSONHarvester._get_content_and_type
+
+def _patched_json_get_content_and_type(self, url, harvest_job, page=1, content_type=None):
+
+    httpretty.enable()
+
+    value1, value2 = original_json_get_content_and_type(self, url, harvest_job, page, content_type)
+
+    httpretty.disable()
+
+    return value1, value2
+
+DCATJSONHarvester._get_content_and_type = _patched_json_get_content_and_type
 
 # End monkey-patch
 
@@ -57,6 +76,11 @@ class TestRDFHarvester(p.SingletonPlugin):
         else:
             return url, []
 
+    def update_session(self, session):
+        self.calls['update_session'] += 1
+        session.headers.update({'x-test': 'true'})
+        return session
+
     def after_download(self, content, harvest_job):
 
         self.calls['after_download'] += 1
@@ -67,6 +91,43 @@ class TestRDFHarvester(p.SingletonPlugin):
             return None, ['Error 1', 'Error 2']
         else:
             return content, []
+
+    def before_update(self, harvest_object, dataset_dict, temp_dict):
+        self.calls['before_update'] += 1
+
+    def after_update(self, harvest_object, dataset_dict, temp_dict):
+        self.calls['after_update'] += 1
+        return None
+
+    def before_create(self, harvest_object, dataset_dict, temp_dict):
+        self.calls['before_create'] += 1
+
+    def after_create(self, harvest_object, dataset_dict, temp_dict):
+        self.calls['after_create'] += 1
+        return None
+
+
+class TestRDFNullHarvester(TestRDFHarvester):
+    p.implements(IDCATRDFHarvester)
+    def before_update(self, harvest_object, dataset_dict, temp_dict):
+        super(TestRDFNullHarvester, self).before_update(harvest_object, dataset_dict, temp_dict)
+        dataset_dict.clear()
+
+    def before_create(self, harvest_object, dataset_dict, temp_dict):
+        super(TestRDFNullHarvester, self).before_create(harvest_object, dataset_dict, temp_dict)
+        dataset_dict.clear()
+
+
+class TestRDFExceptionHarvester(TestRDFHarvester):
+    p.implements(IDCATRDFHarvester)
+
+    raised_exception = False
+
+    def before_create(self, harvest_object, dataset_dict, temp_dict):
+        super(TestRDFExceptionHarvester, self).before_create(harvest_object, dataset_dict, temp_dict)
+        if not self.raised_exception:
+            self.raised_exception = True
+            raise Exception("raising exception in before_create")
 
 
 class TestDCATHarvestUnit(object):
@@ -84,6 +145,19 @@ class TestDCATHarvestUnit(object):
         guid = DCATRDFHarvester()._get_guid(dataset)
 
         eq_(guid, 'http://dataset/uri')
+
+    def test_get_guid_identifier(self):
+
+        dataset = {
+            'name': 'test-dataset',
+            'extras': [
+                {'key': 'identifier', 'value': 'dataset_dcat_id'},
+            ]
+        }
+
+        guid = DCATRDFHarvester()._get_guid(dataset)
+
+        eq_(guid, 'dataset_dcat_id')
 
     def test_get_guid_dcat_identifier(self):
 
@@ -170,10 +244,10 @@ class FunctionalHarvestTest(object):
     @classmethod
     def setup_class(cls):
 
-        cls.gather_consumer = queue.get_consumer('ckan.harvest.gather.test',
-                                                 'harvest_job_id')
-        cls.fetch_consumer = queue.get_consumer('ckan.harvest.fetch.test',
-                                                'harvest_object_id')
+        h.reset_db()
+
+        cls.gather_consumer = queue.get_gather_consumer()
+        cls.fetch_consumer = queue.get_fetch_consumer()
 
         # Minimal remote RDF file
         cls.rdf_mock_url = 'http://some.dcat.file.rdf'
@@ -198,6 +272,95 @@ class FunctionalHarvestTest(object):
         </dcat:Catalog>
         </rdf:RDF>
         '''
+
+        # Minimal remote RDF file with pagination (1)
+        # Use slashes for paginated URLs because HTTPretty won't distinguish
+        # query strings
+        cls.rdf_mock_url_pagination_1 = 'http://some.dcat.file.pagination.rdf'
+        cls.rdf_content_pagination_1 = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:dct="http://purl.org/dc/terms/"
+         xmlns:dcat="http://www.w3.org/ns/dcat#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:hydra="http://www.w3.org/ns/hydra/core#">
+        <dcat:Catalog rdf:about="https://data.some.org/catalog">
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/1">
+              <dct:title>Example dataset 1</dct:title>
+            </dcat:Dataset>
+          </dcat:dataset>
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/2">
+              <dct:title>Example dataset 2</dct:title>
+            </dcat:Dataset>
+          </dcat:dataset>
+        </dcat:Catalog>
+        <hydra:PagedCollection rdf:about="http://some.dcat.file.pagination.rdf/page/1">
+            <hydra:totalItems rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">4</hydra:totalItems>
+            <hydra:lastPage>http://some.dcat.file.pagination.rdf/page/2</hydra:lastPage>
+            <hydra:itemsPerPage rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">2</hydra:itemsPerPage>
+            <hydra:nextPage>http://some.dcat.file.pagination.rdf/page/2</hydra:nextPage>
+            <hydra:firstPage>http://some.dcat.file.pagination.rdf/page/1</hydra:firstPage>
+        </hydra:PagedCollection>
+        </rdf:RDF>
+        '''
+
+        # Minimal remote RDF file with pagination (2)
+        cls.rdf_mock_url_pagination_2 = 'http://some.dcat.file.pagination.rdf/page/2'
+        cls.rdf_content_pagination_2 = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:dct="http://purl.org/dc/terms/"
+         xmlns:dcat="http://www.w3.org/ns/dcat#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:hydra="http://www.w3.org/ns/hydra/core#">
+        <dcat:Catalog rdf:about="https://data.some.org/catalog">
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/3">
+              <dct:title>Example dataset 3</dct:title>
+            </dcat:Dataset>
+          </dcat:dataset>
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/4">
+              <dct:title>Example dataset 4</dct:title>
+            </dcat:Dataset>
+          </dcat:dataset>
+        </dcat:Catalog>
+        <hydra:PagedCollection rdf:about="http://some.dcat.file.pagination.rdf/page/1">
+            <hydra:totalItems rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">4</hydra:totalItems>
+            <hydra:lastPage>http://some.dcat.file.pagination.rdf/page/2</hydra:lastPage>
+            <hydra:itemsPerPage rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">2</hydra:itemsPerPage>
+            <hydra:previousPage>http://some.dcat.file.pagination.rdf/page/1</hydra:previousPage>
+            <hydra:firstPage>http://some.dcat.file.pagination.rdf/page/1</hydra:firstPage>
+        </hydra:PagedCollection>
+        </rdf:RDF>
+        '''
+
+        # Minimal remote RDF file
+        cls.rdf_mock_url = 'http://some.dcat.file.rdf'
+        cls.rdf_content_type = 'application/rdf+xml'
+        cls.rdf_content = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:dct="http://purl.org/dc/terms/"
+         xmlns:dcat="http://www.w3.org/ns/dcat#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <dcat:Catalog rdf:about="https://data.some.org/catalog">
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/1">
+              <dct:title>Example dataset 1</dct:title>
+            </dcat:Dataset>
+          </dcat:dataset>
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/2">
+              <dct:title>Example dataset 2</dct:title>
+            </dcat:Dataset>
+          </dcat:dataset>
+        </dcat:Catalog>
+        </rdf:RDF>
+        '''
+
         cls.rdf_remote_file_small = '''<?xml version="1.0" encoding="utf-8" ?>
         <rdf:RDF
          xmlns:dct="http://purl.org/dc/terms/"
@@ -213,6 +376,51 @@ class FunctionalHarvestTest(object):
         </dcat:Catalog>
         </rdf:RDF>
         '''
+
+        # RDF with minimal distribution
+        cls.rdf_content_with_distribution_uri = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:dct="http://purl.org/dc/terms/"
+         xmlns:dcat="http://www.w3.org/ns/dcat#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <dcat:Catalog rdf:about="https://data.some.org/catalog">
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/1">
+              <dct:title>Example dataset 1</dct:title>
+              <dcat:distribution>
+                <dcat:Distribution rdf:about="https://data.some.org/catalog/datasets/1/resource/1">
+                  <dct:title>Example resource 1</dct:title>
+                  <dcat:accessURL>http://data.some.org/download.zip</dcat:accessURL>
+                </dcat:Distribution>
+              </dcat:distribution>
+            </dcat:Dataset>
+          </dcat:dataset>
+        </dcat:Catalog>
+        </rdf:RDF>
+        '''
+        cls.rdf_content_with_distribution = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:dct="http://purl.org/dc/terms/"
+         xmlns:dcat="http://www.w3.org/ns/dcat#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <dcat:Catalog rdf:about="https://data.some.org/catalog">
+          <dcat:dataset>
+            <dcat:Dataset rdf:about="https://data.some.org/catalog/datasets/1">
+              <dct:title>Example dataset 1</dct:title>
+              <dcat:distribution>
+                <dcat:Distribution>
+                  <dct:title>Example resource 1</dct:title>
+                  <dcat:accessURL>http://data.some.org/download.zip</dcat:accessURL>
+                </dcat:Distribution>
+              </dcat:distribution>
+            </dcat:Dataset>
+          </dcat:dataset>
+        </dcat:Catalog>
+        </rdf:RDF>
+        '''
+
         cls.rdf_remote_file_invalid = '''<?xml version="1.0" encoding="utf-8" ?>
         <rdf:RDF
          xmlns:dcat="http://www.w3.org/ns/dcat#"
@@ -245,7 +453,35 @@ class FunctionalHarvestTest(object):
           a dcat:Dataset ;
           dc:title "Example dataset 1" .
           '''
-        cls.ttl_remote_file_invalid =  '''@prefix dcat: <http://www.w3.org/ns/dcat#> .
+        cls.ttl_unicode_in_keywords = u'''@prefix dcat: <http://www.w3.org/ns/dcat#> .
+        @prefix dc: <http://purl.org/dc/terms/> .
+        <https://data.some.org/catalog>
+          a dcat:Catalog ;
+          dcat:dataset <https://data.some.org/catalog/datasets/1> .
+        <https://data.some.org/catalog/datasets/1>
+          a dcat:Dataset ;
+          dc:title "Example dataset 1" ;
+          dcat:keyword "förskola", "Garduña" .
+        <https://data.some.org/catalog/datasets/2>
+          a dcat:Dataset ;
+          dc:title "Example dataset 2" ;
+          dcat:keyword "San Sebastián", "Ελλάδα" .
+          '''
+        cls.ttl_commas_in_keywords = u'''@prefix dcat: <http://www.w3.org/ns/dcat#> .
+        @prefix dc: <http://purl.org/dc/terms/> .
+        <https://data.some.org/catalog>
+          a dcat:Catalog ;
+          dcat:dataset <https://data.some.org/catalog/datasets/1> .
+        <https://data.some.org/catalog/datasets/1>
+          a dcat:Dataset ;
+          dc:title "Example dataset 1" ;
+          dcat:keyword "Utbildning, kontaktuppgifter" .
+        <https://data.some.org/catalog/datasets/2>
+          a dcat:Dataset ;
+          dc:title "Example dataset 2" ;
+          dcat:keyword "Trees, forest, shrub" .
+          '''
+        cls.ttl_remote_file_invalid = '''@prefix dcat: <http://www.w3.org/ns/dcat#> .
         @prefix dc: <http://purl.org/dc/terms/> .
         <https://data.some.org/catalog>
           a dcat:Catalog ;
@@ -254,13 +490,11 @@ class FunctionalHarvestTest(object):
           dc:title "Example dataset 1" .
           '''
 
-
     def setup(self):
 
         harvest_model.setup()
 
-        self.gather_consumer.queue_purge(queue='ckan.harvest.gather.test')
-        self.fetch_consumer.queue_purge(queue='ckan.harvest.fetch.test')
+        queue.purge_queues()
 
     def teardown(cls):
         h.reset_db()
@@ -278,8 +512,6 @@ class FunctionalHarvestTest(object):
 
         harvest_source = h.call_action('harvest_source_create',
                                        {}, **source_dict)
-
-        eq_(harvest_source['source_type'], 'dcat_rdf')
 
         return harvest_source
 
@@ -363,6 +595,18 @@ class TestDCATHarvestFunctional(FunctionalHarvestTest):
                                   'text/plain',
                                   config='{"rdf_format":"text/turtle"}')
 
+    def test_harvest_create_unicode_keywords(self):
+
+        self._test_harvest_create(self.ttl_mock_url,
+                                  self.ttl_unicode_in_keywords,
+                                  self.ttl_content_type)
+
+    def test_harvest_create_commas_keywords(self):
+
+        self._test_harvest_create(self.ttl_mock_url,
+                                  self.ttl_commas_in_keywords,
+                                  self.ttl_content_type)
+
     def _test_harvest_create(self, url, content, content_type, **kwargs):
 
         # Mock the GET request to get the file
@@ -383,10 +627,79 @@ class TestDCATHarvestFunctional(FunctionalHarvestTest):
         results = h.call_action('package_search', {}, fq=fq)
 
         eq_(results['count'], 2)
-
         for result in results['results']:
             assert result['title'] in ('Example dataset 1',
                                        'Example dataset 2')
+
+    def test_harvest_create_rdf_pagination(self):
+
+        # Mock the GET requests needed to get the file
+        httpretty.register_uri(httpretty.GET, self.rdf_mock_url_pagination_1,
+                               body=self.rdf_content_pagination_1,
+                               content_type=self.rdf_content_type)
+
+        httpretty.register_uri(httpretty.GET, self.rdf_mock_url_pagination_2,
+                               body=self.rdf_content_pagination_2,
+                               content_type=self.rdf_content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # them as well
+        httpretty.register_uri(httpretty.HEAD, self.rdf_mock_url_pagination_1,
+                               status=405,
+                               content_type=self.rdf_content_type)
+
+        httpretty.register_uri(httpretty.HEAD, self.rdf_mock_url_pagination_2,
+                               status=405,
+                               content_type=self.rdf_content_type)
+
+        harvest_source = self._create_harvest_source(
+            self.rdf_mock_url_pagination_1)
+
+        self._run_full_job(harvest_source['id'], num_objects=4)
+
+        # Check that four datasets were created
+        fq = "+type:dataset harvest_source_id:{0}".format(harvest_source['id'])
+        results = h.call_action('package_search', {}, fq=fq)
+
+        eq_(results['count'], 4)
+        eq_(sorted([d['title'] for d in results['results']]),
+            ['Example dataset 1', 'Example dataset 2',
+             'Example dataset 3', 'Example dataset 4'])
+
+    def test_harvest_create_rdf_pagination_same_content(self):
+
+        # Mock the GET requests needed to get the file. Two different URLs but
+        # same content to mock a misconfigured server
+        httpretty.register_uri(httpretty.GET, self.rdf_mock_url_pagination_1,
+                               body=self.rdf_content_pagination_1,
+                               content_type=self.rdf_content_type)
+
+        httpretty.register_uri(httpretty.GET, self.rdf_mock_url_pagination_2,
+                               body=self.rdf_content_pagination_1,
+                               content_type=self.rdf_content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # them as well
+        httpretty.register_uri(httpretty.HEAD, self.rdf_mock_url_pagination_1,
+                               status=405,
+                               content_type=self.rdf_content_type)
+
+        httpretty.register_uri(httpretty.HEAD, self.rdf_mock_url_pagination_2,
+                               status=405,
+                               content_type=self.rdf_content_type)
+
+        harvest_source = self._create_harvest_source(
+            self.rdf_mock_url_pagination_1)
+
+        self._run_full_job(harvest_source['id'], num_objects=2)
+
+        # Check that two datasets were created
+        fq = "+type:dataset harvest_source_id:{0}".format(harvest_source['id'])
+        results = h.call_action('package_search', {}, fq=fq)
+
+        eq_(results['count'], 2)
+        eq_(sorted([d['title'] for d in results['results']]),
+            ['Example dataset 1', 'Example dataset 2'])
 
     def test_harvest_update_rdf(self):
 
@@ -398,6 +711,18 @@ class TestDCATHarvestFunctional(FunctionalHarvestTest):
 
         self._test_harvest_update(self.ttl_mock_url,
                                   self.ttl_content,
+                                  self.ttl_content_type)
+
+    def test_harvest_update_unicode_keywords(self):
+
+        self._test_harvest_create(self.ttl_mock_url,
+                                  self.ttl_unicode_in_keywords,
+                                  self.ttl_content_type)
+
+    def test_harvest_update_commas_keywords(self):
+
+        self._test_harvest_update(self.ttl_mock_url,
+                                  self.ttl_commas_in_keywords,
                                   self.ttl_content_type)
 
     def _test_harvest_update(self, url, content, content_type):
@@ -437,6 +762,71 @@ class TestDCATHarvestFunctional(FunctionalHarvestTest):
         for result in results['results']:
             assert result['title'] in ('Example dataset 1 (updated)',
                                        'Example dataset 2')
+
+    def test_harvest_update_existing_resources(self):
+
+        existing, new = self._test_harvest_update_resources(self.rdf_mock_url,
+                                  self.rdf_content_with_distribution_uri,
+                                  self.rdf_content_type)
+        eq_(new['uri'], 'https://data.some.org/catalog/datasets/1/resource/1')
+        eq_(new['uri'], existing['uri'])
+        eq_(new['id'], existing['id'])
+
+    def test_harvest_update_new_resources(self):
+
+        existing, new = self._test_harvest_update_resources(self.rdf_mock_url,
+                                  self.rdf_content_with_distribution,
+                                  self.rdf_content_type)
+        eq_(existing['uri'], '')
+        eq_(new['uri'], '')
+        nose.tools.assert_is_not(new['id'], existing['id'])
+
+    def _test_harvest_update_resources(self, url, content, content_type):
+        # Mock the GET request to get the file
+        httpretty.register_uri(httpretty.GET, url,
+                               body=content, content_type=content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # this as well
+        httpretty.register_uri(httpretty.HEAD, url,
+                               status=405, content_type=content_type)
+
+        harvest_source = self._create_harvest_source(url)
+
+        # First run, create the dataset with the resource
+        self._run_full_job(harvest_source['id'], num_objects=1)
+
+        # Run the jobs to mark the previous one as Finished
+        self._run_jobs()
+
+        # get the created dataset
+        fq = "+type:dataset harvest_source_id:{0}".format(harvest_source['id'])
+        results = h.call_action('package_search', {}, fq=fq)
+        eq_(results['count'], 1)
+
+        existing_dataset = results['results'][0]
+        existing_resource = existing_dataset.get('resources')[0]
+
+        # Mock an update in the remote file
+        new_file = content.replace('Example resource 1',
+                                   'Example resource 1 (updated)')
+        httpretty.register_uri(httpretty.GET, url,
+                               body=new_file, content_type=content_type)
+
+        # Run a second job
+        self._run_full_job(harvest_source['id'])
+
+        # get the updated dataset
+        new_results = h.call_action('package_search', {}, fq=fq)
+        eq_(new_results['count'], 1)
+
+        new_dataset = new_results['results'][0]
+        new_resource = new_dataset.get('resources')[0]
+
+        eq_(existing_resource['name'], 'Example resource 1')
+        eq_(len(new_dataset.get('resources')), 1)
+        eq_(new_resource['name'], 'Example resource 1 (updated)')
+        return (existing_resource, new_resource)
 
     def test_harvest_delete_rdf(self):
 
@@ -527,6 +917,37 @@ class TestDCATHarvestFunctional(FunctionalHarvestTest):
         assert ('Error parsing the RDF file'
                 in last_job_status['gather_error_summary'][0][0])
 
+    @patch.object(ckanext.dcat.harvesters.rdf.RDFParser, 'datasets')
+    def test_harvest_exception_in_profile(self, mock_datasets):
+        mock_datasets.side_effect = Exception
+
+        # Mock the GET request to get the file
+        httpretty.register_uri(httpretty.GET, self.rdf_mock_url,
+                               body=self.rdf_content, content_type=self.rdf_content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # this as well
+        httpretty.register_uri(httpretty.HEAD, self.rdf_mock_url,
+                               status=405, content_type=self.rdf_content_type)
+
+        harvest_source = self._create_harvest_source(self.rdf_mock_url)
+        self._create_harvest_job(harvest_source['id'])
+        self._run_jobs(harvest_source['id'])
+        self._gather_queue(1)
+
+        # Run the jobs to mark the previous one as Finished
+        self._run_jobs()
+
+        # Get the harvest source with the udpated status
+        harvest_source = h.call_action('harvest_source_show',
+                                       id=harvest_source['id'])
+
+        last_job_status = harvest_source['status']['last_job']
+
+        eq_(last_job_status['status'], 'Finished')
+        assert ('Error when processsing dataset'
+                in last_job_status['gather_error_summary'][0][0])
+
 
 class TestDCATHarvestFunctionalExtensionPoints(FunctionalHarvestTest):
 
@@ -605,10 +1026,7 @@ class TestDCATHarvestFunctionalExtensionPoints(FunctionalHarvestTest):
 
         eq_(last_job_status['status'], 'Finished')
 
-        # We would expect two datasets created, so if no stats we assume the
-        # gather stage was stopped
-
-        eq_(last_job_status['stats'], {})
+        eq_(last_job_status['stats']['added'], 0)
 
     def test_harvest_before_download_errors_get_stored(self):
 
@@ -648,6 +1066,35 @@ class TestDCATHarvestFunctionalExtensionPoints(FunctionalHarvestTest):
 
         eq_('Error 1', last_job_status['gather_error_summary'][0][0])
         eq_('Error 2', last_job_status['gather_error_summary'][1][0])
+
+    def test_harvest_update_session_extension_point_gets_called(self):
+
+        plugin = p.get_plugin('test_rdf_harvester')
+
+        harvest_source = self._create_harvest_source(self.rdf_mock_url)
+        self._create_harvest_job(harvest_source['id'])
+        self._run_jobs(harvest_source['id'])
+        self._gather_queue(1)
+
+        eq_(plugin.calls['update_session'], 1)
+
+    def test_harvest_update_session_add_header(self):
+
+        plugin = p.get_plugin('test_rdf_harvester')
+
+        harvest_source = self._create_harvest_source(self.rdf_mock_url)
+        self._create_harvest_job(harvest_source['id'])
+        self._run_jobs(harvest_source['id'])
+        self._gather_queue(1)
+
+        eq_(plugin.calls['update_session'], 1)
+
+        # Run the jobs to mark the previous one as Finished
+        self._run_jobs()
+
+        # Check that the header was actually set
+        assert ('true'
+                in httpretty.last_request().headers['x-test'])
 
     def test_harvest_after_download_extension_point_gets_called(self):
 
@@ -707,10 +1154,7 @@ class TestDCATHarvestFunctionalExtensionPoints(FunctionalHarvestTest):
 
         eq_(last_job_status['status'], 'Finished')
 
-        # We would expect two datasets created, so if no stats we assume the
-        # gather stage was stopped
-
-        eq_(last_job_status['stats'], {})
+        eq_(last_job_status['stats']['added'], 0)
 
     def test_harvest_after_download_errors_get_stored(self):
 
@@ -751,6 +1195,197 @@ class TestDCATHarvestFunctionalExtensionPoints(FunctionalHarvestTest):
 
         eq_('Error 1', last_job_status['gather_error_summary'][0][0])
         eq_('Error 2', last_job_status['gather_error_summary'][1][0])
+
+    def test_harvest_import_extensions_point_gets_called(self):
+
+        plugin = p.get_plugin('test_rdf_harvester')
+
+        url = self.rdf_mock_url
+        content =  self.rdf_content
+        content_type = self.rdf_content_type
+
+        # Mock the GET request to get the file
+        httpretty.register_uri(httpretty.GET, url,
+                               body=content, content_type=content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # this as well
+        httpretty.register_uri(httpretty.HEAD, url,
+                               status=405, content_type=content_type)
+
+        harvest_source = self._create_harvest_source(url)
+
+        # First run, will create two datasets as previously tested
+        self._run_full_job(harvest_source['id'], num_objects=2)
+
+        # Run the jobs to mark the previous one as Finished
+        self._run_jobs()
+
+        # Get the harvest source with the udpated status
+        harvest_source = h.call_action('harvest_source_show',
+                                       id=harvest_source['id'])
+        last_job_status = harvest_source['status']['last_job']
+        eq_(last_job_status['status'], 'Finished')
+
+        eq_(plugin.calls['before_create'], 2)
+        eq_(plugin.calls['after_create'], 2)
+        eq_(plugin.calls['before_update'], 0)
+        eq_(plugin.calls['after_update'], 0)
+
+        # Mock an update in the remote file
+        new_file = content.replace('Example dataset 1',
+                                   'Example dataset 1 (updated)')
+        httpretty.register_uri(httpretty.GET, url,
+                               body=new_file, content_type=content_type)
+
+        # Run a second job
+        self._run_full_job(harvest_source['id'], num_objects=2)
+
+        eq_(plugin.calls['before_create'], 2)
+        eq_(plugin.calls['after_create'], 2)
+        eq_(plugin.calls['before_update'], 2)
+        eq_(plugin.calls['after_update'], 2)
+
+
+class TestDCATHarvestFunctionalSetNull(FunctionalHarvestTest):
+
+    @classmethod
+    def setup_class(self):
+        super(TestDCATHarvestFunctionalSetNull, self).setup_class()
+        p.load('test_rdf_null_harvester')
+
+    @classmethod
+    def teardown_class(self):
+        p.unload('test_rdf_null_harvester')
+
+    def setup(self):
+        super(TestDCATHarvestFunctionalSetNull, self).setup()
+
+        plugin = p.get_plugin('test_rdf_null_harvester')
+        plugin.calls = defaultdict(int)
+
+    def teardown(self):
+        super(TestDCATHarvestFunctionalSetNull, self).teardown()
+
+        plugin = p.get_plugin('test_rdf_null_harvester')
+        plugin.calls = defaultdict(int)
+
+    def test_harvest_with_before_create_null(self):
+        plugin = p.get_plugin('test_rdf_null_harvester')
+
+        url = self.rdf_mock_url
+        content =  self.rdf_content
+        content_type = self.rdf_content_type
+
+        # Mock the GET request to get the file
+        httpretty.register_uri(httpretty.GET, url,
+                               body=content, content_type=content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # this as well
+        httpretty.register_uri(httpretty.HEAD, url,
+                               status=405, content_type=content_type)
+
+        harvest_source = self._create_harvest_source(url)
+
+        self._run_full_job(harvest_source['id'], num_objects=2)
+
+        # Run the jobs to mark the previous one as Finished
+        self._run_jobs()
+
+        # Get the harvest source with the updated status
+        harvest_source = h.call_action('harvest_source_show',
+                                       id=harvest_source['id'])
+        last_job_status = harvest_source['status']['last_job']
+        eq_(last_job_status['status'], 'Finished')
+
+        nose.tools.assert_dict_equal(
+            last_job_status['stats'],
+            {
+                'deleted': 0,
+                'added': 0,
+                'updated': 0,
+                'not modified': 2,
+                'errored': 0
+            }
+        )
+
+        eq_(plugin.calls['before_create'], 2)
+        eq_(plugin.calls['after_create'], 0)
+        eq_(plugin.calls['before_update'], 0)
+        eq_(plugin.calls['after_update'], 0)
+
+
+class TestDCATHarvestFunctionalRaiseExcpetion(FunctionalHarvestTest):
+
+    @classmethod
+    def setup_class(self):
+        super(TestDCATHarvestFunctionalRaiseExcpetion, self).setup_class()
+        p.load('test_rdf_exception_harvester')
+
+    @classmethod
+    def teardown_class(self):
+        p.unload('test_rdf_exception_harvester')
+
+    def setup(self):
+        super(TestDCATHarvestFunctionalRaiseExcpetion, self).setup()
+
+        plugin = p.get_plugin('test_rdf_exception_harvester')
+        plugin.calls = defaultdict(int)
+
+    def teardown(self):
+        super(TestDCATHarvestFunctionalRaiseExcpetion, self).teardown()
+
+        plugin = p.get_plugin('test_rdf_exception_harvester')
+        plugin.calls = defaultdict(int)
+
+    def test_harvest_with_before_create_raising_exception(self):
+        plugin = p.get_plugin('test_rdf_exception_harvester')
+
+        url = self.rdf_mock_url
+        content =  self.rdf_content
+        content_type = self.rdf_content_type
+
+        # Mock the GET request to get the file
+        httpretty.register_uri(httpretty.GET, url,
+                               body=content, content_type=content_type)
+
+        # The harvester will try to do a HEAD request first so we need to mock
+        # this as well
+        httpretty.register_uri(httpretty.HEAD, url,
+                               status=405, content_type=content_type)
+
+        harvest_source = self._create_harvest_source(url)
+
+        self._run_full_job(harvest_source['id'], num_objects=2)
+
+        # Run the jobs to mark the previous one as Finished
+        self._run_jobs()
+
+        # Get the harvest source with the updated status
+        harvest_source = h.call_action('harvest_source_show',
+                                       id=harvest_source['id'])
+        last_job_status = harvest_source['status']['last_job']
+        eq_(last_job_status['status'], 'Finished')
+
+        assert ('Error importing dataset'
+                in last_job_status['object_error_summary'][0][0])
+
+        nose.tools.assert_dict_equal(
+            last_job_status['stats'],
+            {
+                'deleted': 0,
+                'added': 1,
+                'updated': 0,
+                'not modified': 0,
+                'errored': 1
+            }
+        )
+
+        eq_(plugin.calls['before_create'], 2)
+        eq_(plugin.calls['after_create'], 1)
+        eq_(plugin.calls['before_update'], 0)
+        eq_(plugin.calls['after_update'], 0)
 
 
 class TestDCATRDFHarvester(object):

@@ -3,19 +3,19 @@ import json
 
 import nose
 
+from ckantoolkit import config
+
 from rdflib import Graph, URIRef, BNode, Literal
 from rdflib.namespace import RDF
 
 from ckan.plugins import toolkit
 
-try:
-    from ckan.tests import helpers
-except ImportError:
-    from ckan.new_tests import helpers
+from ckantoolkit.tests import helpers, factories
 
-from ckanext.dcat.processors import RDFParser
+from ckanext.dcat.processors import RDFParser, RDFSerializer
 from ckanext.dcat.profiles import (DCAT, DCT, ADMS, LOCN, SKOS, GSP, RDFS,
                                    GEOJSON_IMT)
+from ckanext.dcat.utils import DCAT_EXPOSE_SUBCATALOGS, DCAT_CLEAN_TAGS
 
 eq_ = nose.tools.eq_
 assert_true = nose.tools.assert_true
@@ -59,6 +59,7 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
         eq_(dataset['notes'], u'During the period 1982-86 a team of geologists from the British Geological Survey ...')
         eq_(dataset['url'], 'http://dataset.info.org')
         eq_(dataset['version'], '2.3')
+        eq_(dataset['license_id'], 'cc-nc')
 
         # Tags
 
@@ -79,7 +80,6 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
         eq_(_get_extra_value('issued'), u'2012-05-10')
         eq_(_get_extra_value('modified'), u'2012-05-10T21:04:00')
         eq_(_get_extra_value('identifier'), u'9df8df51-63db-37a8-e044-0003ba9b0d98')
-        eq_(_get_extra_value('alternate_identifier'), u'alternate-identifier-x343')
         eq_(_get_extra_value('version_notes'), u'New schema added')
         eq_(_get_extra_value('temporal_start'), '1905-03-01')
         eq_(_get_extra_value('temporal_end'), '2013-01-05')
@@ -92,6 +92,9 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
         eq_(_get_extra_value('publisher_type'), 'http://purl.org/adms/publishertype/NonProfitOrganisation')
         eq_(_get_extra_value('contact_name'), 'Point of Contact')
         eq_(_get_extra_value('contact_email'), 'mailto:contact@some.org')
+        eq_(_get_extra_value('access_rights'), 'public')
+        eq_(_get_extra_value('provenance'), 'Some statement about provenance')
+        eq_(_get_extra_value('dcat_type'), 'test-type')
 
         #  Lists
         eq_(sorted(_get_extra_value_as_list('language')), [u'ca', u'en', u'es'])
@@ -99,6 +102,18 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
                                                         u'http://eurovoc.europa.eu/100142',
                                                         u'http://eurovoc.europa.eu/209065'])
         eq_(sorted(_get_extra_value_as_list('conforms_to')), [u'Standard 1', u'Standard 2'])
+
+        eq_(sorted(_get_extra_value_as_list('alternate_identifier')), [u'alternate-identifier-1', u'alternate-identifier-2'])
+        eq_(sorted(_get_extra_value_as_list('documentation')), [u'http://dataset.info.org/doc1',
+                                                                u'http://dataset.info.org/doc2'])
+        eq_(sorted(_get_extra_value_as_list('related_resource')), [u'http://dataset.info.org/related1',
+                                                                   u'http://dataset.info.org/related2'])
+        eq_(sorted(_get_extra_value_as_list('has_version')), [u'https://data.some.org/catalog/datasets/derived-dataset-1',
+                                                              u'https://data.some.org/catalog/datasets/derived-dataset-2'])
+        eq_(sorted(_get_extra_value_as_list('is_version_of')), [u'https://data.some.org/catalog/datasets/original-dataset'])
+        eq_(sorted(_get_extra_value_as_list('source')), [u'https://data.some.org/catalog/datasets/source-dataset-1',
+                                                         u'https://data.some.org/catalog/datasets/source-dataset-2'])
+        eq_(sorted(_get_extra_value_as_list('sample')), [u'https://data.some.org/catalog/datasets/9df8df51-63db-37a8-e044-0003ba9b0d98/sample'])
 
         # Dataset URI
         eq_(_get_extra_value('uri'), u'https://data.some.org/catalog/datasets/9df8df51-63db-37a8-e044-0003ba9b0d98')
@@ -117,8 +132,19 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
         eq_(resource['modified'], u'2012-05-01T00:04:06')
         eq_(resource['status'], u'http://purl.org/adms/status/Completed')
 
+        eq_(resource['hash'], u'4304cf2e751e6053c90b1804c89c0ebb758f395a')
+        eq_(resource['hash_algorithm'], u'http://spdx.org/rdf/terms#checksumAlgorithm_sha1')
+
+        # Lists
+        for item in [
+            ('documentation', [u'http://dataset.info.org/distribution1/doc1', u'http://dataset.info.org/distribution1/doc2']),
+            ('language', [u'ca', u'en', u'es']),
+            ('conforms_to', [u'Standard 1', u'Standard 2']),
+        ]:
+            eq_(sorted(json.loads(resource[item[0]])), item[1])
+
         # These two are likely to need clarification
-        eq_(resource['license'], u'http://creativecommons.org/licenses/by/3.0/')
+        eq_(resource['license'], u'http://creativecommons.org/licenses/by-nc/2.0/')
         eq_(resource['rights'], u'Some statement about rights')
 
         eq_(resource['url'], u'http://www.bgs.ac.uk/gbase/geochemcd/home.html')
@@ -145,6 +171,47 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
         dataset = [d for d in p.datasets()][0]
 
         eq_(dataset['version'], u'2.3a')
+
+    def test_dataset_license_from_distribution_by_uri(self):
+        # license_id retrieved from the URI of dcat:license object
+        g = Graph()
+
+        dataset = URIRef("http://example.org/datasets/1")
+        g.add((dataset, RDF.type, DCAT.Dataset))
+
+        distribution = URIRef("http://example.org/datasets/1/ds/1")
+        g.add((dataset, DCAT.distribution, distribution))
+        g.add((distribution, RDF.type, DCAT.Distribution))
+        g.add((distribution, DCT.license,
+               URIRef("http://www.opendefinition.org/licenses/cc-by")))
+
+        p = RDFParser(profiles=['euro_dcat_ap'])
+
+        p.g = g
+
+        dataset = [d for d in p.datasets()][0]
+        eq_(dataset['license_id'], 'cc-by')
+
+    def test_dataset_license_from_distribution_by_title(self):
+        # license_id retrieved from dct:title of dcat:license object
+        g = Graph()
+
+        dataset = URIRef("http://example.org/datasets/1")
+        g.add((dataset, RDF.type, DCAT.Dataset))
+
+        distribution = URIRef("http://example.org/datasets/1/ds/1")
+        g.add((distribution, RDF.type, DCAT.Distribution))
+        g.add((dataset, DCAT.distribution, distribution))
+        license = BNode()
+        g.add((distribution, DCT.license, license))
+        g.add((license, DCT.title, Literal("Creative Commons Attribution")))
+
+        p = RDFParser(profiles=['euro_dcat_ap'])
+
+        p.g = g
+
+        dataset = [d for d in p.datasets()][0]
+        eq_(dataset['license_id'], 'cc-by')
 
     def test_distribution_access_url(self):
         g = Graph()
@@ -519,6 +586,67 @@ class TestEuroDCATAPProfileParsing(BaseParseTest):
         eq_(_get_extra_value('dcat_publisher_name'), 'Publishing Organization for dataset 1')
         eq_(_get_extra_value('dcat_publisher_email'), 'contact@some.org')
         eq_(_get_extra_value('language'), 'ca,en,es')
+    
+    @helpers.change_config(DCAT_EXPOSE_SUBCATALOGS, 'true')
+    def test_parse_subcatalog(self):
+        publisher = {'name': 'Publisher',
+                     'email': 'email@test.com',
+                     'type': 'Publisher',
+                     'uri': 'http://pub.lish.er'}
+        dataset = {
+            'id': '4b6fe9ca-dc77-4cec-92a4-55c6624a5bd6',
+            'name': 'test-dataset',
+            'title': 'test dataset',
+            'extras': [
+                {'key': 'source_catalog_title', 'value': 'Subcatalog example'},
+                {'key': 'source_catalog_homepage', 'value': 'http://subcatalog.example'},
+                {'key': 'source_catalog_description', 'value': 'Subcatalog example description'},
+                {'key': 'source_catalog_language', 'value': 'http://publications.europa.eu/resource/authority/language/ITA'},
+                {'key': 'source_catalog_modified', 'value': '2000-01-01'},
+                {'key': 'source_catalog_publisher', 'value': json.dumps(publisher)}
+            ]
+        }        
+        catalog_dict = {
+            'title': 'My Catalog',
+            'description': 'An Open Data Catalog',
+            'homepage': 'http://example.com',
+            'language': 'de',
+        }
+
+        s = RDFSerializer()
+        s.serialize_catalog(catalog_dict, dataset_dicts=[dataset])
+        g = s.g
+
+        p = RDFParser(profiles=['euro_dcat_ap'])
+
+        p.g = g
+
+        # at least one subcatalog with hasPart
+        subcatalogs = list(p.g.objects(None, DCT.hasPart))
+        assert_true(subcatalogs)
+
+        # at least one dataset in subcatalogs
+        subdatasets = []
+        for subcatalog in subcatalogs:
+            datasets = p.g.objects(subcatalog, DCAT.dataset)
+            for dataset in datasets:
+                subdatasets.append((dataset,subcatalog,))
+        assert_true(subdatasets)
+        
+        datasets = dict([(d['title'], d) for d in p.datasets()])
+
+        for subdataset, subcatalog in subdatasets:
+            title = unicode(list(p.g.objects(subdataset, DCT.title))[0])
+            dataset = datasets[title]
+            has_subcat = False
+            for ex in dataset['extras']:
+                exval = ex['value']
+                exkey = ex['key']
+                if exkey == 'source_catalog_homepage':
+                    has_subcat = True
+                    eq_(exval, unicode(subcatalog))
+            # check if we had subcatalog in extras
+            assert_true(has_subcat)
 
 
 class TestEuroDCATAPProfileParsingSpatial(BaseParseTest):
@@ -750,3 +878,54 @@ class TestEuroDCATAPProfileParsingSpatial(BaseParseTest):
         eq_(extras['spatial_uri'], 'http://geonames/Newark')
         assert_true('spatial_text' not in extras)
         assert_true('spatial' not in extras)
+
+    def test_tags_with_commas(self):
+        g = Graph()
+
+        dataset = URIRef('http://example.org/datasets/1')
+        g.add((dataset, RDF.type, DCAT.Dataset))
+        g.add((dataset, DCAT.keyword, Literal('Tree, forest, shrub')))
+        p = RDFParser(profiles=['euro_dcat_ap'])
+
+        p.g = g
+
+        datasets = [d for d in p.datasets()]
+        
+        eq_(len(datasets[0]['tags']), 3)
+
+    INVALID_TAG = "Som`E-in.valid tag!;"
+    VALID_TAG = {'name': 'some-invalid-tag'}
+
+    @helpers.change_config(DCAT_CLEAN_TAGS, 'true')
+    def test_tags_with_commas_clean_tags_on(self):
+        g = Graph()
+
+        dataset = URIRef('http://example.org/datasets/1')
+        g.add((dataset, RDF.type, DCAT.Dataset))
+        g.add((dataset, DCAT.keyword, Literal(self.INVALID_TAG)))
+        p = RDFParser(profiles=['euro_dcat_ap'])
+
+        p.g = g
+
+        datasets = [d for d in p.datasets()]
+
+        assert_true(self.VALID_TAG in datasets[0]['tags'])
+        assert_true(self.INVALID_TAG not in datasets[0]['tags'])
+
+
+    @helpers.change_config(DCAT_CLEAN_TAGS, 'false')
+    def test_tags_with_commas_clean_tags_off(self):
+        g = Graph()
+
+        dataset = URIRef('http://example.org/datasets/1')
+        g.add((dataset, RDF.type, DCAT.Dataset))
+        g.add((dataset, DCAT.keyword, Literal(self.INVALID_TAG)))
+        p = RDFParser(profiles=['euro_dcat_ap'])
+
+        p.g = g
+
+        # when config flag is set to false, bad tags can happen
+        
+        datasets = [d for d in p.datasets()]
+        assert_true(self.VALID_TAG not in datasets[0]['tags'])
+        assert_true({'name': self.INVALID_TAG} in datasets[0]['tags'])

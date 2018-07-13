@@ -23,7 +23,7 @@ def dcat_dataset_show(context, data_dict):
 
     dataset_dict = toolkit.get_action('package_show')(context, data_dict)
 
-    serializer = RDFSerializer()
+    serializer = RDFSerializer(profiles=data_dict.get('profiles'))
 
     output = serializer.serialize_dataset(dataset_dict,
                                           _format=data_dict.get('format'))
@@ -40,7 +40,7 @@ def dcat_catalog_show(context, data_dict):
     dataset_dicts = query['results']
     pagination_info = _pagination_info(query, data_dict)
 
-    serializer = RDFSerializer()
+    serializer = RDFSerializer(profiles=data_dict.get('profiles'))
     serializer.validation_mode = data_dict.get('validation_mode') in ['true', 'True']
 
     output = serializer.serialize_catalog({}, dataset_dicts,
@@ -60,7 +60,7 @@ def dcat_catalog_search(context, data_dict):
     dataset_dicts = query['results']
     pagination_info = _pagination_info(query, data_dict)
 
-    serializer = RDFSerializer()
+    serializer = RDFSerializer(profiles=data_dict.get('profiles'))
 
     output = serializer.serialize_catalog({}, dataset_dicts,
                                           _format=data_dict.get('format'),
@@ -145,18 +145,24 @@ def _pagination_info(query, data_dict):
 
     def _page_url(page):
 
+        base_url = config.get('ckan.site_url', '').strip('/')
+        if not base_url:
+            base_url = toolkit.request.host_url
+        base_url = '%s%s' % (
+            base_url, toolkit.request.path)
+
         params = [p for p in toolkit.request.params.iteritems()
                   if p[0] != 'page']
         if params:
             qs = '&'.join(['{0}={1}'.format(p[0], p[1]) for p in params])
             return '{0}?{1}&page={2}'.format(
-                toolkit.request.path_url,
+                base_url,
                 qs,
                 page
             )
         else:
             return '{0}?page={1}'.format(
-                toolkit.request.path_url,
+                base_url,
                 page
             )
 

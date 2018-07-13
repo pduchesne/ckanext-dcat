@@ -1,12 +1,25 @@
 import logging
 import uuid
+import json
 
-from pylons import config
+from ckantoolkit import config, h
+
+try:
+    # CKAN >= 2.6
+    from ckan.exceptions import HelperError
+except ImportError:
+    # CKAN < 2.6
+    class HelperError(Exception):
+        pass
 
 from ckan import model
+import ckan.plugins.toolkit as toolkit
+
+_ = toolkit._
 
 log = logging.getLogger(__name__)
 
+DCAT_EXPOSE_SUBCATALOGS = 'ckanext.dcat.expose_subcatalogs'
 
 CONTENT_TYPES = {
     'rdf': 'application/rdf+xml',
@@ -16,6 +29,82 @@ CONTENT_TYPES = {
     'jsonld': 'application/ld+json',
 }
 
+DCAT_CLEAN_TAGS = 'ckanext.dcat.clean_tags'
+
+
+def field_labels():
+    '''
+    Returns a dict with the user friendly translatable field labels that
+    can be used in the frontend.
+    '''
+
+    return {
+        'uri': _('URI'),
+        'guid': _('GUID'),
+        'theme': _('Theme'),
+        'identifier': _('Identifier'),
+        'alternate_identifier': _('Alternate identifier'),
+        'issued': _('Issued'),
+        'modified': _('Modified'),
+        'version_notes': _('Version notes'),
+        'language': _('Language'),
+        'frequency': _('Frequency'),
+        'conforms_to': _('Conforms to'),
+        'spatial_uri': _('Spatial URI'),
+        'temporal_start': _('Start of temporal extent'),
+        'temporal_end': _('End of temporal extent'),
+        'publisher_uri': _('Publisher URI'),
+        'publisher_name': _('Publisher name'),
+        'publisher_email': _('Publisher email'),
+        'publisher_url': _('Publisher URL'),
+        'publisher_type': _('Publisher type'),
+        'contact_name': _('Contact name'),
+        'contact_email': _('Contact email'),
+        'contact_uri': _('Contact URI'),
+        'download_url': _('Download URL'),
+        'mimetype': _('Media type'),
+        'size': _('Size'),
+        'rights': _('Rights'),
+        'created': _('Created'),
+    }
+
+def helper_available(helper_name):
+    '''
+    Checks if a given helper name is available on `h`
+    '''
+    try:
+        getattr(h, helper_name)
+    except (AttributeError, HelperError):
+        return False
+    return True
+
+def structured_data(dataset_id, profiles=None, _format='jsonld'):
+    '''
+    Returns a string containing the structured data of the given
+    dataset id and using the given profiles (if no profiles are supplied
+    the default profiles are used).
+
+    This string can be used in the frontend.
+    '''
+    if not profiles:
+        profiles = ['schemaorg']
+
+    data = toolkit.get_action('dcat_dataset_show')(
+        {},
+        {
+            'id': dataset_id, 
+            'profiles': profiles, 
+            'format': _format, 
+        }
+    )
+    # parse result again to prevent UnicodeDecodeError and add formatting
+    try:
+        json_data = json.loads(data)
+        return json.dumps(json_data, sort_keys=True,
+                          indent=4, separators=(',', ': '))
+    except ValueError:
+        # result was not JSON, return anyway
+        return data
 
 def catalog_uri():
     '''
@@ -76,7 +165,7 @@ def dataset_uri(dataset_dict):
     uri = dataset_dict.get('uri')
     if not uri:
         for extra in dataset_dict.get('extras', []):
-            if extra['key'] == 'uri':
+            if extra['key'] == 'uri' and extra['value'] != 'None':
                 uri = extra['value']
                 break
     if not uri and dataset_dict.get('id'):
@@ -100,7 +189,8 @@ def resource_uri(resource_dict):
     The value will be the first found of:
 
         1. The value of the `uri` field
-        2. `catalog_uri()` + '/dataset/' + `package_id` + '/resource/' + `id` field
+        2. `catalog_uri()` + '/dataset/' + `package_id` + '/resource/'
+            + `id` field
 
     Check the documentation for `catalog_uri()` for the recommended ways of
     setting it.
@@ -109,7 +199,7 @@ def resource_uri(resource_dict):
     '''
 
     uri = resource_dict.get('uri')
-    if not uri:
+    if not uri or uri == 'None':
         dataset_id = dataset_id_from_resource(resource_dict)
 
         uri = '{0}/dataset/{1}/resource/{2}'.format(catalog_uri().rstrip('/'),
@@ -139,7 +229,7 @@ def publisher_uri_from_dataset_dict(dataset_dict):
     generated.
     '''
 
-    uri = dataset_dict.get('pubisher_uri')
+    uri = dataset_dict.get('publisher_uri')
     if not uri:
         for extra in dataset_dict.get('extras', []):
             if extra['key'] == 'publisher_uri':
@@ -197,6 +287,7 @@ import re
 import operator
 # For parsing {name};q=x and {name} style fields from the accept header
 accept_re = re.compile("^(?P<ct>[^;]+)[ \t]*(;[ \t]*q=(?P<q>[0-9.]+)){0,1}$")
+
 
 def parse_accept_header(accept_header=''):
     '''
