@@ -149,13 +149,13 @@ class TestSchemaOrgProfileSerializeDataset(BaseSerializeTest):
         assert self._triple(g, publisher, RDF.type, SCHEMA.Organization)
         assert self._triple(g, publisher, SCHEMA.name, dataset['organization']['title'])
 
-    def test_temporal_start_and_end(self):
+    def test_temporal-extent-begin_and_end(self):
         dataset = {
             'id': '4b6fe9ca-dc77-4cec-92a4-55c6624a5bd6',
             'name': 'test-dataset',
             'extras': [
-                {'key': 'temporal_start', 'value': '2015-06-26T15:21:09.075774'},
-                {'key': 'temporal_end', 'value': '2015-07-14'},
+                {'key': 'temporal-extent-begin', 'value': '2015-06-26T15:21:09.075774'},
+                {'key': 'temporal-extent-end', 'value': '2015-07-14'},
             ]
         }
         extras = self._extras(dataset)
@@ -167,12 +167,12 @@ class TestSchemaOrgProfileSerializeDataset(BaseSerializeTest):
 
         assert self._triple(g, dataset_ref, SCHEMA.temporalCoverage, '2015-06-26T15:21:09.075774/2015-07-14')
 
-    def test_temporal_start_only(self):
+    def test_temporal-extent-begin_only(self):
         dataset = {
             'id': '4b6fe9ca-dc77-4cec-92a4-55c6624a5bd6',
             'name': 'test-dataset',
             'extras': [
-                {'key': 'temporal_start', 'value': '2015-06-26T15:21:09.075774'},
+                {'key': 'temporal-extent-begin', 'value': '2015-06-26T15:21:09.075774'},
             ]
         }
         extras = self._extras(dataset)
@@ -182,7 +182,7 @@ class TestSchemaOrgProfileSerializeDataset(BaseSerializeTest):
 
         dataset_ref = s.graph_from_dataset(dataset)
 
-        assert self._triple(g, dataset_ref, SCHEMA.temporalCoverage, parse_date(extras['temporal_start']).isoformat())
+        assert self._triple(g, dataset_ref, SCHEMA.temporalCoverage, parse_date(extras['temporal-extent-begin']).isoformat())
 
     def test_spatial(self):
         dataset = {

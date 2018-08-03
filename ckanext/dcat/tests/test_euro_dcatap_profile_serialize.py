@@ -346,8 +346,8 @@ class TestEuroDCATAPProfileSerializeDataset(BaseSerializeTest):
             'id': '4b6fe9ca-dc77-4cec-92a4-55c6624a5bd6',
             'name': 'test-dataset',
             'extras': [
-                {'key': 'temporal_start', 'value': '2015-06-26T15:21:09.075774'},
-                {'key': 'temporal_end', 'value': '2015-07-14'},
+                {'key': 'temporal-extent-begin', 'value': '2015-06-26T15:21:09.075774'},
+                {'key': 'temporal-extent-end', 'value': '2015-07-14'},
             ]
         }
         extras = self._extras(dataset)
@@ -361,8 +361,8 @@ class TestEuroDCATAPProfileSerializeDataset(BaseSerializeTest):
         assert temporal
 
         assert self._triple(g, temporal, RDF.type, DCT.PeriodOfTime)
-        assert self._triple(g, temporal, SCHEMA.startDate, parse_date(extras['temporal_start']).isoformat(), XSD.dateTime)
-        assert self._triple(g, temporal, SCHEMA.endDate, parse_date(extras['temporal_end']).isoformat(), XSD.dateTime)
+        assert self._triple(g, temporal, SCHEMA.startDate, parse_date(extras['temporal-extent-begin']).isoformat(), XSD.dateTime)
+        assert self._triple(g, temporal, SCHEMA.endDate, parse_date(extras['temporal-extent-end']).isoformat(), XSD.dateTime)
 
     def test_spatial(self):
         dataset = {
