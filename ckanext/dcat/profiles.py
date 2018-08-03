@@ -776,10 +776,10 @@ class EuropeanDCATAPProfile(RDFProfile):
         start, end = self._time_interval(dataset_ref, DCT.temporal)
         if start:
             dataset_dict['extras'].append(
-                {'key': 'temporal_start', 'value': start})
+                {'key': 'temporal-extent-begin', 'value': start})
         if end:
             dataset_dict['extras'].append(
-                {'key': 'temporal_end', 'value': end})
+                {'key': 'temporal-extent-end', 'value': end})
 
         # Spatial
         spatial = self._spatial(dataset_ref, DCT.spatial)
@@ -1008,8 +1008,8 @@ class EuropeanDCATAPProfile(RDFProfile):
             self._add_triples_from_dict(dataset_dict, publisher_details, items)
 
         # Temporal
-        start = self._get_dataset_value(dataset_dict, 'temporal_start')
-        end = self._get_dataset_value(dataset_dict, 'temporal_end')
+        start = self._get_dataset_value(dataset_dict, 'temporal-extent-begin')
+        end = self._get_dataset_value(dataset_dict, 'temporal-extent-end')
         if start or end:
             temporal_extent = BNode()
 
@@ -1304,8 +1304,8 @@ class SchemaOrgProfile(RDFProfile):
             self._add_triples_from_dict(dataset_dict, contact_point, items)
 
     def _temporal_graph(self, dataset_ref, dataset_dict):
-        start = self._get_dataset_value(dataset_dict, 'temporal_start')
-        end = self._get_dataset_value(dataset_dict, 'temporal_end')
+        start = self._get_dataset_value(dataset_dict, 'temporal-extent-begin')
+        end = self._get_dataset_value(dataset_dict, 'temporal-extent-end')
         if start or end:
             if start and end:
                 self.g.add((dataset_ref, SCHEMA.temporalCoverage, Literal('%s/%s' % (start, end))))
