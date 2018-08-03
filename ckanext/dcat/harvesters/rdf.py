@@ -239,8 +239,11 @@ class DCATRDFHarvester(DCATHarvester):
                 return []
 
             # get the next page
-            # next_page_url = links and ('http://www.w3.org/ns/hydra/core#nextPage' in links) and links['http://www.w3.org/ns/hydra/core#nextPage']['url']
             next_page_url = parser.next_page()
+            # if parser does not advertise next page and we have hydra links in headers, use them
+            if (not next_page_url and links and ('http://www.w3.org/ns/hydra/core#nextPage' in links)):
+                next_page_url = links['http://www.w3.org/ns/hydra/core#nextPage']['url']
+
 
         # Check if some datasets need to be deleted
         object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
