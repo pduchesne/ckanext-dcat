@@ -8,6 +8,8 @@ from ckan import logic
 from ckan import plugins as p
 from ckanext.harvest.model import HarvestObject, HarvestObjectExtra
 
+import requests
+
 from ckanext.dcat import converters
 from ckanext.dcat.harvesters.base import DCATHarvester
 
