@@ -48,7 +48,7 @@ class DCATHarvester(HarvesterBase):
             else:
                 self._save_gather_error('Could not get content for this url',
                                         harvest_job)
-                return None, None
+                return None, None, None
 
         try:
             if page > 1:
@@ -90,7 +90,7 @@ class DCATHarvester(HarvesterBase):
                 if length >= self.MAX_FILE_SIZE:
                     self._save_gather_error('Remote file is too big.',
                                             harvest_job)
-                    return None, None
+                    return None, None, None
 
             if content_type is None and r.headers.get('content-type'):
                 content_type = r.headers.get('content-type').split(";", 1)[0]
