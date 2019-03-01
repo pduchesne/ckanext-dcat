@@ -205,8 +205,8 @@ class DCATRDFHarvester(DCATHarvester):
                 self._save_gather_error('Error parsing the RDF file: {0}'.format(e), harvest_job)
                 return []
 
-            try:
-                for dataset in parser.datasets():
+            for dataset in parser.datasets():
+                try:
                     if not dataset.get('name'):
                         dataset['name'] = self._gen_new_name(dataset['title'])
 
@@ -233,10 +233,9 @@ class DCATRDFHarvester(DCATHarvester):
 
                     obj.save()
                     object_ids.append(obj.id)
-            except Exception, e:
-                self._save_gather_error('Error when processsing dataset: %r / %s' % (e, traceback.format_exc()),
-                                        harvest_job)
-                return []
+                except Exception, e:
+                    self._save_gather_error('Error when processsing dataset: %r / %s' % (e, traceback.format_exc()),
+                                            harvest_job)
 
             # get the next page
             next_page_url = parser.next_page()
