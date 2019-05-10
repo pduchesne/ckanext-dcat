@@ -82,7 +82,8 @@ def dcat_datasets_list(context, data_dict):
 
 def _search_ckan_datasets(context, data_dict):
 
-    n = int(config.get('ckanext.dcat.datasets_per_page', DATASETS_PER_PAGE))
+    n = int(data_dict.get('max_results', config.get('ckanext.dcat.datasets_per_page',
+                                                     DATASETS_PER_PAGE)))
     page = data_dict.get('page', 1) or 1
 
     try:
@@ -176,8 +177,8 @@ def _pagination_info(query, data_dict):
     if query['count'] == 0:
         return {}
 
-    items_per_page = int(config.get('ckanext.dcat.datasets_per_page',
-                                    DATASETS_PER_PAGE))
+    items_per_page = int(data_dict.get('max_results', config.get('ckanext.dcat.datasets_per_page',
+                                    DATASETS_PER_PAGE)))
     pagination_info = {
         'count': query['count'],
         'items_per_page': items_per_page,
