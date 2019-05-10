@@ -9,6 +9,7 @@ from ckan.plugins import toolkit
 import ckanext.dcat.converters as converters
 
 from ckanext.dcat.processors import RDFSerializer
+from urllib import quote
 
 
 DATASETS_PER_PAGE = 100
@@ -155,7 +156,7 @@ def _pagination_info(query, data_dict):
         params = [p for p in toolkit.request.params.iteritems()
                   if p[0] != 'page']
         if params:
-            qs = '&'.join(['{0}={1}'.format(p[0], p[1]) for p in params])
+            qs = '&'.join(['{0}={1}'.format(p[0], quote(p[1])) for p in params])
             return '{0}?{1}&page={2}'.format(
                 base_url,
                 qs,
