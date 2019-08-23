@@ -1,8 +1,10 @@
 {% ckan_extends %}
 {% block links %}
    {{ super() }}
+    {#-- disable n3 and ttl links in VODAP
    <link rel="alternate" type="text/n3" href="{{ h.url_for('dcat_catalog', _format='n3', qualified=True) }}"/>
    <link rel="alternate" type="text/ttl" href="{{ h.url_for('dcat_catalog', _format='ttl', qualified=True) }}"/>
+    --#}
    <link rel="alternate" type="application/rdf+xml" href="{{ h.url_for('dcat_catalog', _format='xml', qualified=True) }}"/>
    <link rel="alternate" type="application/ld+json" href="{{ h.url_for('dcat_catalog', _format='jsonld', qualified=True) }}"/>
 {% endblock -%}
