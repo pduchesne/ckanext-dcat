@@ -150,110 +150,109 @@ class DCATRDFHarvester(DCATHarvester):
 
     def gather_stage(self, harvest_job):
 
-        try:
-            log.debug('In DCATRDFHarvester gather_stage')
+        log.debug('In DCATRDFHarvester gather_stage')
 
-            rdf_format = None
-            if harvest_job.source.config:
-                rdf_format = json.loads(harvest_job.source.config).get("rdf_format")
+        rdf_format = None
+        if harvest_job.source.config:
+            rdf_format = json.loads(harvest_job.source.config).get("rdf_format")
 
-            # Get file contents of first page
-            next_page_url = harvest_job.source.url
+        # Get file contents of first page
+        next_page_url = harvest_job.source.url
 
-            guids_in_source = []
-            object_ids = []
-            last_content_hash = None
+        guids_in_source = []
+        object_ids = []
+        last_content_hash = None
 
-            while next_page_url:
-                for harvester in p.PluginImplementations(IDCATRDFHarvester):
-                    next_page_url, before_download_errors = harvester.before_download(next_page_url, harvest_job)
+        while next_page_url:
+            for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                next_page_url, before_download_errors = harvester.before_download(next_page_url, harvest_job)
 
-                    for error_msg in before_download_errors:
-                        self._save_gather_error(error_msg, harvest_job)
+                for error_msg in before_download_errors:
+                    self._save_gather_error(error_msg, harvest_job)
 
-                    if not next_page_url:
-                        return []
+                if not next_page_url:
+                    return []
 
+            try:
                 content, rdf_format, links = self._get_content_and_type(next_page_url, harvest_job, 1, content_type=rdf_format)
+            except Exception, e:
+                self._save_gather_error('Error while retrieving RDF data: %s' % e, harvest_job)
 
-                content_hash = hashlib.md5()
-                if content:
-                    content_hash.update(content)
+            content_hash = hashlib.md5()
+            if content:
+                content_hash.update(content)
 
-                if last_content_hash:
-                    if content_hash.digest() == last_content_hash.digest():
-                        log.warning('Remote content was the same even when using a paginated URL, skipping')
-                        break
-                else:
-                    last_content_hash = content_hash
+            if last_content_hash:
+                if content_hash.digest() == last_content_hash.digest():
+                    log.warning('Remote content was the same even when using a paginated URL, skipping')
+                    break
+            else:
+                last_content_hash = content_hash
 
-                # TODO: store content?
-                for harvester in p.PluginImplementations(IDCATRDFHarvester):
-                    content, after_download_errors = harvester.after_download(content, harvest_job)
+            # TODO: store content?
+            for harvester in p.PluginImplementations(IDCATRDFHarvester):
+                content, after_download_errors = harvester.after_download(content, harvest_job)
 
-                    for error_msg in after_download_errors:
-                        self._save_gather_error(error_msg, harvest_job)
+                for error_msg in after_download_errors:
+                    self._save_gather_error(error_msg, harvest_job)
 
-                if not content:
-                    return []
+            if not content:
+                return []
 
-                # TODO: profiles conf
-                parser = RDFParser()
+            # TODO: profiles conf
+            parser = RDFParser()
 
+            try:
+                parser.parse(content, _format=rdf_format)
+            except RDFParserException, e:
+                self._save_gather_error('Error parsing the RDF file: {0}'.format(e), harvest_job)
+                return []
+
+            for dataset in parser.datasets():
                 try:
-                    parser.parse(content, _format=rdf_format)
-                except RDFParserException, e:
-                    self._save_gather_error('Error parsing the RDF file: {0}'.format(e), harvest_job)
-                    return []
+                    if not dataset.get('name'):
+                        dataset['name'] = self._gen_new_name(dataset['title'])
 
-                for dataset in parser.datasets():
-                    try:
-                        if not dataset.get('name'):
-                            dataset['name'] = self._gen_new_name(dataset['title'])
+                    # Unless already set by the parser, get the owner organization (if any)
+                    # from the harvest source dataset
+                    if not dataset.get('owner_org'):
+                        source_dataset = model.Package.get(harvest_job.source.id)
+                        if source_dataset.owner_org:
+                            dataset['owner_org'] = source_dataset.owner_org
 
-                        # Unless already set by the parser, get the owner organization (if any)
-                        # from the harvest source dataset
-                        if not dataset.get('owner_org'):
-                            source_dataset = model.Package.get(harvest_job.source.id)
-                            if source_dataset.owner_org:
-                                dataset['owner_org'] = source_dataset.owner_org
+                    # Try to get a unique identifier for the harvested dataset
+                    guid = self._get_guid(dataset)
 
-                        # Try to get a unique identifier for the harvested dataset
-                        guid = self._get_guid(dataset)
-
-                        if not guid:
-                            self._save_gather_error('Could not get a unique identifier for dataset: {0}'.format(dataset),
-                                                    harvest_job)
-                            continue
-
-                        dataset['extras'].append({'key': 'guid', 'value': guid})
-                        guids_in_source.append(guid)
-
-                        obj = HarvestObject(guid=guid, job=harvest_job,
-                                            content=json.dumps(dataset))
-
-                        obj.save()
-                        object_ids.append(obj.id)
-                    except Exception, e:
-                        self._save_gather_error('Error when processsing dataset: %r / %s' % (e, traceback.format_exc()),
+                    if not guid:
+                        self._save_gather_error('Could not get a unique identifier for dataset: {0}'.format(dataset),
                                                 harvest_job)
+                        continue
 
-                # get the next page
-                next_page_url = parser.next_page()
-                # if parser does not advertise next page and we have hydra links in headers, use them
-                if (not next_page_url and links and ('http://www.w3.org/ns/hydra/core#nextPage' in links)):
-                    next_page_url = links['http://www.w3.org/ns/hydra/core#nextPage']['url']
+                    dataset['extras'].append({'key': 'guid', 'value': guid})
+                    guids_in_source.append(guid)
+
+                    obj = HarvestObject(guid=guid, job=harvest_job,
+                                        content=json.dumps(dataset))
+
+                    obj.save()
+                    object_ids.append(obj.id)
+                except Exception, e:
+                    self._save_gather_error('Error when processsing dataset: %r / %s' % (e, traceback.format_exc()),
+                                            harvest_job)
+
+            # get the next page
+            next_page_url = parser.next_page()
+            # if parser does not advertise next page and we have hydra links in headers, use them
+            if (not next_page_url and links and ('http://www.w3.org/ns/hydra/core#nextPage' in links)):
+                next_page_url = links['http://www.w3.org/ns/hydra/core#nextPage']['url']
 
 
-            # Check if some datasets need to be deleted
-            object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
+        # Check if some datasets need to be deleted
+        object_ids_to_delete = self._mark_datasets_for_deletion(guids_in_source, harvest_job)
 
-            object_ids.extend(object_ids_to_delete)
+        object_ids.extend(object_ids_to_delete)
 
-            return object_ids
-        except Exception, e:
-            self._save_gather_error('Error while gathering data: %s' % e, harvest_job)
-            return []
+        return object_ids
 
     def fetch_stage(self, harvest_object):
         # Nothing to do here
