@@ -329,6 +329,16 @@ class DCATRDFHarvester(DCATHarvester):
                 dataset['name'] = existing_dataset['name']
                 dataset['id'] = existing_dataset['id']
 
+                current_harvest_object = model.Session.query(HarvestObject) \
+                    .filter(HarvestObject.package_id==existing_dataset['id']) \
+                        .filter(HarvestObject.current==True) \
+                        .first()
+
+                if not current_harvest_object:
+                    log.warn('Updating a dataset that does not belong to a harvest source: %s' % existing_dataset['name'])
+                elif current_harvest_object.job.source.id != harvest_object.job.source.id:
+                    log.warn('Updating a dataset that does not belong to this harvest source: %s belongs to %s' % (existing_dataset['name'], current_harvest_object.job.source.id) )
+
                 harvester_tmp_dict = {}
 
                 # check if resources already exist based on their URI
