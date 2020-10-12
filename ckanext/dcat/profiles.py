@@ -112,9 +112,9 @@ class RDFProfile(object):
 
         If found, the unicode representation is returned, else an empty string
         '''
-        for o in self.g.objects(subject, predicate):
-            return unicode(o)
-        return ''
+        values_map = {o.language if 'language' in o else 'en': unicode(o) for o in self.g.objects(subject, predicate)}
+
+        return values_map.get('nl', values_map.get('en', values_map.values()[0] if len(values_map.values()) else '' ))
 
     def _object_value_int(self, subject, predicate):
         '''
