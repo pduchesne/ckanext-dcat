@@ -14,7 +14,7 @@ def dcat_to_ckan(dcat_dict):
 
     package_dict['tags'] = []
     for keyword in dcat_dict.get('keyword', []):
-        package_dict['tags'].append({'name': keyword})
+        if keyword: package_dict['tags'].append({'name': keyword})
 
     package_dict['extras'] = []
     for key in ['issued', 'modified']:
