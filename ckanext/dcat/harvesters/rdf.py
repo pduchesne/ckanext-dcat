@@ -163,6 +163,7 @@ class DCATRDFHarvester(DCATHarvester):
         guids_in_source = []
         object_ids = []
         last_content_hash = None
+        new_names = set()
 
         try:
             while next_page_url:
@@ -215,7 +216,9 @@ class DCATRDFHarvester(DCATHarvester):
                     count += 1
                     try:
                         if not dataset.get('name'):
-                            dataset['name'] = self._gen_new_name(dataset['title'])
+                            dataset['name'] = self._gen_new_name(dataset['title'], other_new_names=new_names)
+
+                        new_names.add(dataset['name'])
 
                         # Unless already set by the parser, get the owner organization (if any)
                         # from the harvest source dataset
