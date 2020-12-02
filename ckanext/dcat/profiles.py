@@ -839,6 +839,19 @@ class EuropeanDCATAPProfile(RDFProfile):
                 if values:
                     resource_dict[key] = json.dumps(values)
 
+            conformanceItems = self.g.objects(distribution, DCT.conformsTo)
+            if conformanceItems:
+                nonStandardConf = []
+                for conf in conformanceItems:
+                    if self.g.__contains__((conf, RDF.type, DCT.Standard)):
+                        resource_dict['conforms_to_standard'] = self._object_value(conf, DCT.title)
+                    else:
+                        nonStandardConf.append(conf)
+
+                if len(nonStandardConf):
+                    resource_dict['conforms_to'] = json.dumps(unicode(nonStandardConf))
+
+
             # Format and media type
             normalize_ckan_format = config.get(
                 'ckanext.dcat.normalize_ckan_format', True)
